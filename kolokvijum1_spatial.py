@@ -1,12 +1,53 @@
 import time
+import pandas as pd
+import pyproj
+import h3
+from h3 import latlng_to_cell
 from auto_simulator import AutoSimulator
 from drive_simulator import DriveSimulator, get_route_coordinates, get_route_coords, load_serbian_roads, show_route_distances
 
-# ------------------------------
-# Učitati podatke o nezgodama
-# ------------------------------
+#globalna promenljiva koja cuva podatke o nezgodama
+ACCIDENTS_DF = None
+
+#mapiranje (h3 celija -> lista nesreca) za brzu pretragu
+ACCIDENTS_H3_MAP = {}
+
 def load_accidents_data():
-    a = 1
+    global ACCIDENTS_DF, ACCIDENTS_H3_MAP
+    print("Učitavanje i indeksiranje podataka")
+
+    df = pd.read_excel("data/nez-opendata-2024-20250125.xlsx")
+
+    #preimenovanje kolone za laksi rad
+    df = df.rename(columns={df.columns[3]: 'datetime_str'})
+    df['datetime'] = pd.to_datetime(df['datetime_str'], format='%d.%m.%Y,%H:%M', errors='coerce')
+    df = df.dropna(subset=['datetime'])
+
+    df['x'] = df.iloc[:, 4].astype(float) # kolona 4, vrednost x (longituda)
+    df['y'] = df.iloc[:, 5].astype(float) # kolona 5, vrednost y (latituda)
+
+    # merkatorova projekcija
+    proj_crs = pyproj.CRS('EPSG:3857')
+    geo_crs = pyproj.CRS("EPSG:4326")
+
+    transformer = pyproj.Transformer.from_crs(proj_crs, geo_crs, always_xy=True)
+
+    # transformise koordinate u korisne vrednosti
+    lon, lat = transformer.transform(df['x'].values, df['y'].values)
+    df['lon'] = lon
+    df['lat'] = lat
+
+    # dodaje h3 index
+    resolution = 9
+    df['h3_cell'] = df.apply(lambda r: latlng_to_cell(r['lat'], r['lon'], resolution), axis=1)
+
+    ACCIDENTS_DF = df
+    ACCIDENTS_H3_MAP = df.groupby('h3_cell').apply(
+        lambda g: g[['lat', 'lon', 'datetime']].to_dict('records')
+    ).to_dict()
+
+    print(f"Završeno učitavanje {len(df)} nesreća u H3 index rezolucije {resolution}.")
+
 
 # OVDE UNETI KOD KOJI ĆE PROVERAVATI OKOLINU AUTOMOBILA
 def check_accident_zone(lat, lon):
