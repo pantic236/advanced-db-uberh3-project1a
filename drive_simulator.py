@@ -1,28 +1,27 @@
-
 import osmnx as ox
 from geopy.geocoders import Nominatim
 import matplotlib.pyplot as plt
 import contextily as ctx
 import networkx as nx
 
-
 import matplotlib.pyplot as plt
 import contextily as ctx
 
+
 def load_serbian_roads():
     # Učitaj mrežu puteva Srbije
-    
+
     G = ox.load_graphml('serbia_roads.graphml')
-    
+
     return G
 
+
 def get_route_coordinates(start_city, end_city):
-    
     geolocator = Nominatim(user_agent="geo_sim")
-    
+
     start_loc = geolocator.geocode(start_city + ", Serbia")
     end_loc = geolocator.geocode(end_city + ", Serbia")
-    
+
     if not start_loc or not end_loc:
         raise ValueError(f"Nisu pronađene koordinate za {start_city} ili {end_city}")
 
@@ -33,6 +32,7 @@ def get_route_coordinates(start_city, end_city):
     print(f"{end_city}: {dest}")
 
     return orig, dest
+
 
 def get_route_length(route, G):
     route_length = 0
@@ -50,6 +50,7 @@ def get_route_length(route, G):
 
     return route_length
 
+
 def show_route_distances(route_coords):
     total_distance = 0.0
     from geopy.distance import geodesic
@@ -62,10 +63,10 @@ def show_route_distances(route_coords):
         total_distance += segment_distance
         print(f"  Segment {i + 1}: {segment_distance:.2f} m")
 
-    print(f"Ukupna dužina rute: {total_distance/1000:.2f} km")
+    print(f"Ukupna dužina rute: {total_distance / 1000:.2f} km")
+
 
 def get_route_coords(G, orig, dest):
-    
     # Nađi najbliže čvorove u grafu
     orig_node = ox.distance.nearest_nodes(G, orig[1], orig[0])
     dest_node = ox.distance.nearest_nodes(G, dest[1], dest[0])
@@ -77,17 +78,19 @@ def get_route_coords(G, orig, dest):
 
     # Izračunaj dužinu puta
     route_length = get_route_length(route, G)
-    print(f"Ruta pronađena: {route_length/1000:.2f} km, {len(route)} čvorova")
+    print(f"Ruta pronađena: {route_length / 1000:.2f} km, {len(route)} čvorova")
 
     return route_coords, route
 
+
 class DriveSimulator:
-    
+
     def __init__(self, G, edge_color='lightgray', edge_linewidth=0.5):
-        self.fig, self.ax = ox.plot_graph(G, node_size=0, edge_color=edge_color, edge_linewidth=edge_linewidth, show=False, close=False)
+        self.fig, self.ax = ox.plot_graph(G, node_size=0, edge_color=edge_color, edge_linewidth=edge_linewidth,
+                                          show=False, close=False)
 
         self.marker = None
-    
+
     def prikazi_mapu(self, route_coords, route_color, auto_marker_color='ro', auto_marker_size=8):
         # 5. Crtanje rute
         x = [lon for lat, lon in route_coords]
@@ -102,19 +105,18 @@ class DriveSimulator:
 
         # 7. Simulacija kretanja automobila (kao crveni marker)
         self.marker, = self.ax.plot([], [], auto_marker_color, markersize=auto_marker_size, label='Automobil')
-        #marker, = ax.plot([], [], 'ro', markersize=8, label='Automobil')
+        # marker, = ax.plot([], [], 'ro', markersize=8, label='Automobil')
 
         self.ax.legend()
 
         plt.ion()  # Interaktivni mod
         plt.show()
 
-
     def _show_background_map(self, ax):
         try:
-            
+
             ctx.add_basemap(ax, crs="EPSG:4326", source=ctx.providers.OpenStreetMap.Mapnik)
-            #ctx.add_basemap(ax, crs="EPSG:4326", source=ctx.providers.CartoDB.Positron)
+            # ctx.add_basemap(ax, crs="EPSG:4326", source=ctx.providers.CartoDB.Positron)
         except Exception as e:
             print(f"Contextily nije dostupan: {e}")
 
@@ -122,37 +124,37 @@ class DriveSimulator:
     #   route_coords: lista (lat, lon) koordinata
     #   padding: procenat paddinga oko rute (0.05 = 5%)
     def _set_map_bounds(self, route_coords, padding=0.05):
-        
+
         lats = [coord[0] for coord in route_coords]
         lons = [coord[1] for coord in route_coords]
-        
+
         min_lat, max_lat = min(lats), max(lats)
         min_lon, max_lon = min(lons), max(lons)
-        
+
         # Dodaj padding
         lat_range = max_lat - min_lat
         lon_range = max_lon - min_lon
-        
+
         min_lat -= lat_range * padding
         max_lat += lat_range * padding
         min_lon -= lon_range * padding
         max_lon += lon_range * padding
-        
+
         self.ax.set_xlim(min_lon, max_lon)
         self.ax.set_ylim(min_lat, max_lat)
 
     def move_auto_marker(self, lat, lon, auto_progress_info, plot_pause=0.01):
         # Ažuriraj poziciju auto markera na mapi
         self.marker.set_data([lon], [lat])
-        
+
         # Informacije o napretku
         title = (f"Pozicija: ({lat:.4f}, {lon:.4f}) | "
-                f"Segment: {auto_progress_info['segment']}/{auto_progress_info['total_segments']} "
-                f"({auto_progress_info['segment_progress']:.1f}%) | "
-                f"Ukupno: {auto_progress_info['overall_progress']:.1f}% | "
-                f"Brzina: {auto_progress_info['speed_kmh']} km/h")
+                 f"Segment: {auto_progress_info['segment']}/{auto_progress_info['total_segments']} "
+                 f"({auto_progress_info['segment_progress']:.1f}%) | "
+                 f"Ukupno: {auto_progress_info['overall_progress']:.1f}% | "
+                 f"Brzina: {auto_progress_info['speed_kmh']} km/h")
         self.ax.set_title(title)
-        
+
         plt.draw()
         plt.pause(plot_pause)
 
