@@ -17,7 +17,7 @@ def load_serbian_roads():
 
 
 def get_route_coordinates(start_city, end_city):
-    geolocator = Nominatim(user_agent="geo_sim")
+    geolocator = Nominatim(user_agent="h3-project-advanced-db", timeout=10)
 
     start_loc = geolocator.geocode(start_city + ", Serbia")
     end_loc = geolocator.geocode(end_city + ", Serbia")

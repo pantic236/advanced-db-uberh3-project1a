@@ -10,10 +10,6 @@ from auto_simulator import AutoSimulator
 from drive_simulator import DriveSimulator, get_route_coordinates, get_route_coords, load_serbian_roads, \
     show_route_distances
 
-# ------------------------------
-# Učitati podatke o nezgodama
-# ------------------------------
-
 # globalna promenljiva koja cuva podatke o nezgodama
 ACCIDENTS_DF = None
 
@@ -32,19 +28,8 @@ def load_accidents_data():
     df['datetime'] = pd.to_datetime(df['datetime_str'], format='%d.%m.%Y,%H:%M', errors='coerce')
     df = df.dropna(subset=['datetime'])
 
-    df['x'] = df.iloc[:, 4].astype(float)  # kolona 4, vrednost x (longituda)
-    df['y'] = df.iloc[:, 5].astype(float)  # kolona 5, vrednost y (latituda)
-
-    # merkatorova projekcija
-    proj_crs = pyproj.CRS('EPSG:3857')
-    geo_crs = pyproj.CRS("EPSG:4326")
-
-    transformer = pyproj.Transformer.from_crs(proj_crs, geo_crs, always_xy=True)
-
-    # transformise koordinate u korisne vrednosti
-    lon, lat = transformer.transform(df['x'].values, df['y'].values)
-    df['lon'] = lon
-    df['lat'] = lat
+    df['lon'] = df.iloc[:, 4].astype(float) / 1_000_000.0
+    df['lat'] = df.iloc[:, 5].astype(float) / 1_000_000.0
 
     # dodaje h3 index
     resolution = 9
@@ -57,22 +42,17 @@ def load_accidents_data():
 
     print(f"Završeno učitavanje {len(df)} nesreća u H3 index rezolucije {resolution}.")
 
-
-# OVDE UNETI KOD KOJI ĆE PROVERAVATI OKOLINU AUTOMOBILA
-def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0):
+def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0, print_warning=True):
     if current_time is None:
         current_time = pd.Timestamp.now()
 
     current_cell = latlng_to_cell(lat, lon, 9)
-
     ring_size = int(look_ahead_km / 0.35) + 1
-
     nearby_cells = grid_disk(current_cell, ring_size)
 
     total_accidents = 0
     time_matched = 0
     seasonal_matched = 0
-
     accidents_details = []
 
     for cell in nearby_cells:
@@ -109,7 +89,7 @@ def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0):
     elif total_accidents >= 2:
         danger_level = "UMERENO OPASNO"
 
-    if total_accidents > 0:
+    if print_warning and total_accidents > 0:
         print(f"\n{'=' * 60}")
         print(f"UPOZORENJE - {danger_level}")
         print(f"{'=' * 60}")
@@ -129,13 +109,24 @@ def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0):
 
 
 if __name__ == "__main__":
-
-    # ------------------------------
-    # Učitaj podatke o nezgodama
-    # ------------------------------
     load_accidents_data()
-    # -------------------------------
-    # -------------------------------
+    print("\n[DEBUG] First 3 accidents in dataset:")
+    for i in range(min(3, len(ACCIDENTS_DF))):
+        acc = ACCIDENTS_DF.iloc[i]
+        print(f"  {i+1}. Lat: {acc['lat']:.4f}, Lon: {acc['lon']:.4f}, Time: {acc['datetime']}")
+
+    # Test: check danger EXACTLY at first accident location
+    if len(ACCIDENTS_DF) > 0:
+        first = ACCIDENTS_DF.iloc[0]
+        print(f"\n[DEBUG] Checking danger at accident #1: ({first['lat']:.4f}, {first['lon']:.4f})")
+        result = check_accident_zone(
+            first['lat'],
+            first['lon'],
+            current_time=first['datetime'],  # match exact time
+            look_ahead_km=1.0,
+            print_warning=True
+        )
+        print(f"[DEBUG] Result → Danger: {result['danger_level']}, Total found: {result['total']}\n")
 
     start_city = "Prijepolje"
     end_city = "Užice"
@@ -169,6 +160,11 @@ if __name__ == "__main__":
 
     interval_simulacije = 1.0  # sekunde
     # 7. Glavna petlja simulacije
+    DEST_LAT, DEST_LON = dest
+    FINISH_RADIUS_KM = 1
+
+
+
     try:
         step_count = 0
         while automobil.running:
@@ -176,8 +172,18 @@ if __name__ == "__main__":
             auto_current_pos = automobil.move()
             lat, lon = auto_current_pos
 
+            dist_to_dest = geodesic((lat, lon), (DEST_LAT, DEST_LON)).kilometers
+
+            danger_info = check_accident_zone(lat, lon, look_ahead_km=2)
+            current_danger = danger_info["danger_level"]
+
             print(f"[Step {step_count}] Moving...")
             print(f"Trenutna pozicija: {lat:.6f}, {lon:.6f}")
+            print(f"Nivo opasnosti: {current_danger}")
+            print(f"Preostalo kilometara: {dist_to_dest:.2f} km")
+
+            progress_info = automobil.get_progress_info()
+            marker_label = f"{progress_info} | {current_danger}"
             drive_simulator.move_auto_marker(lat, lon, automobil.get_progress_info(), plot_pause=0.01)
 
             # Pozovi check_neighbourhood samo na svakih 5 koraka (da ne zatrpava konzolu)
@@ -186,7 +192,7 @@ if __name__ == "__main__":
                 check_accident_zone(lat, lon)
 
             # Proveri da li je stigao na kraj
-            if automobil.is_finished():
+            if dist_to_dest <= FINISH_RADIUS_KM:
                 print("\n=== Automobil je stigao na destinaciju! ===")
                 break
 
