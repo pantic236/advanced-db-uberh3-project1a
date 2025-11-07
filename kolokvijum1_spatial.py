@@ -128,8 +128,8 @@ if __name__ == "__main__":
         )
         print(f"[DEBUG] Result → Danger: {result['danger_level']}, Total found: {result['total']}\n")
 
-    start_city = "Prijepolje"
-    end_city = "Užice"
+    start_city = "Kruševac"
+    end_city = "Trstenik"
 
     # 1. Učitaj mrežu puteva Srbije
     G = load_serbian_roads()

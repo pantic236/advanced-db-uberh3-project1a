@@ -3,6 +3,12 @@ from geopy.geocoders import Nominatim
 import matplotlib.pyplot as plt
 import contextily as ctx
 import networkx as nx
+import matplotlib
+import platform
+if platform.system() == 'Darwin':
+    matplotlib.use('MacOSX')
+else:
+    matplotlib.use('TkAgg')
 
 import matplotlib.pyplot as plt
 import contextily as ctx
