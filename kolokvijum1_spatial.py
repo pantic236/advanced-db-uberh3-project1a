@@ -7,8 +7,7 @@ from geopy.distance import geodesic
 import matplotlib
 
 from auto_simulator import AutoSimulator
-from drive_simulator import DriveSimulator, get_route_coordinates, get_route_coords, load_serbian_roads, \
-    show_route_distances
+
 
 # globalna promenljiva koja cuva podatke o nezgodama
 ACCIDENTS_DF = None
@@ -109,27 +108,28 @@ def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0, print_wa
 
 
 if __name__ == "__main__":
+    from drive_simulator import DriveSimulator, get_route_coordinates, get_route_coords, load_serbian_roads, \
+        show_route_distances
     load_accidents_data()
     print("\n[DEBUG] First 3 accidents in dataset:")
     for i in range(min(3, len(ACCIDENTS_DF))):
         acc = ACCIDENTS_DF.iloc[i]
         print(f"  {i+1}. Lat: {acc['lat']:.4f}, Lon: {acc['lon']:.4f}, Time: {acc['datetime']}")
 
-    # Test: check danger EXACTLY at first accident location
     if len(ACCIDENTS_DF) > 0:
         first = ACCIDENTS_DF.iloc[0]
         print(f"\n[DEBUG] Checking danger at accident #1: ({first['lat']:.4f}, {first['lon']:.4f})")
         result = check_accident_zone(
             first['lat'],
             first['lon'],
-            current_time=first['datetime'],  # match exact time
+            current_time=first['datetime'],
             look_ahead_km=1.0,
             print_warning=True
         )
         print(f"[DEBUG] Result → Danger: {result['danger_level']}, Total found: {result['total']}\n")
 
-    start_city = "Kruševac"
-    end_city = "Trstenik"
+    start_city = "Prijepolje"
+    end_city = "Novi Pazar"
 
     # 1. Učitaj mrežu puteva Srbije
     G = load_serbian_roads()

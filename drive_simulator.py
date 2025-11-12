@@ -13,6 +13,8 @@ else:
 import matplotlib.pyplot as plt
 import contextily as ctx
 
+from kolokvijum1_spatial import check_accident_zone
+
 
 def load_serbian_roads():
     # Učitaj mrežu puteva Srbije
@@ -94,8 +96,10 @@ class DriveSimulator:
     def __init__(self, G, edge_color='lightgray', edge_linewidth=0.5):
         self.fig, self.ax = ox.plot_graph(G, node_size=0, edge_color=edge_color, edge_linewidth=edge_linewidth,
                                           show=False, close=False)
-
+        self.fig.set_size_inches(14, 10)
         self.marker = None
+        self.danger_text = None
+        self.accident_info_text = None
 
     def prikazi_mapu(self, route_coords, route_color, auto_marker_color='ro', auto_marker_size=8):
         # 5. Crtanje rute
@@ -149,20 +153,102 @@ class DriveSimulator:
         self.ax.set_xlim(min_lon, max_lon)
         self.ax.set_ylim(min_lat, max_lat)
 
-    def move_auto_marker(self, lat, lon, auto_progress_info, plot_pause=0.01):
+    def move_auto_marker(self, lat, lon, auto_progress_info, plot_pause=0.1):
+        danger_result = check_accident_zone(
+            lat=lat,
+            lon=lon,
+            look_ahead_km=5.0,
+            print_warning=False
+        )
+        danger_level = danger_result['danger_level']
+        total_accidents = danger_result['total']
+        time_matched = danger_result['time_matched']
+        seasonal_matched = danger_result['seasonal_matched']
+
         # Ažuriraj poziciju auto markera na mapi
         self.marker.set_data([lon], [lat])
 
         # Informacije o napretku
-        title = (f"Pozicija: ({lat:.4f}, {lon:.4f}) | "
-                 f"Segment: {auto_progress_info['segment']}/{auto_progress_info['total_segments']} "
-                 f"({auto_progress_info['segment_progress']:.1f}%) | "
-                 f"Ukupno: {auto_progress_info['overall_progress']:.1f}% | "
-                 f"Brzina: {auto_progress_info['speed_kmh']} km/h")
-        self.ax.set_title(title)
+        title = (
+            f"Pozicija: ({lat:.4f}, {lon:.4f}) | "
+            f"Segment: {auto_progress_info['segment']}/{auto_progress_info['total_segments']} "
+            f"({auto_progress_info['segment_progress']:.1f}%) | "
+            f"Ukupno: {auto_progress_info['overall_progress']:.1f}% | "
+            f"Brzina: {auto_progress_info['speed_kmh']} km/h | "
+        )
+        self.ax.set_title(title, color="white", fontsize=15)
 
-        plt.draw()
+        color_map = {
+            "BEZBEDNO": "green",
+            "UMERENO OPASNO": "orange",
+            "OPASNO": "red",
+            "VEOMA OPASNO": "darkred"
+        }
+        bg_color = color_map.get(danger_level, "gray")
+        text_color = "white"
+
+        if self.danger_text is None:
+            self.danger_text = self.ax.text(
+                0.02, 0.98, "",
+                transform=self.ax.transAxes,
+                fontsize=16,
+                fontweight='bold',
+                verticalalignment='top',
+                horizontalalignment="left",
+                bbox=dict(boxstyle="round,pad=0.5", alpha=0.95)
+            )
+
+        danger_text_content = f"NIVO OPASNOSTI: {danger_level}"
+        self.danger_text.set_text(danger_text_content)
+        self.danger_text.set_color(text_color)
+        self.danger_text.set_bbox(dict(
+            facecolor=bg_color,
+            alpha=0.95,
+            boxstyle="round,pad=0.5",
+            edgecolor="black",
+            linewidth=2
+        ))
+
+        if self.accident_info_text is None:
+            self.accident_info_text = self.ax.text(
+                0.02, 0.88, "",
+                transform=self.ax.transAxes,
+                fontsize=11,
+                verticalalignment='top',
+                horizontalalignment='left',
+                family='monospace',
+                bbox=dict(boxstyle="round,pad=0.4", alpha=0.9)
+            )
+
+        if total_accidents > 0:
+            info_lines = [
+                f"Nesreće u narednih 5km: {total_accidents}",
+                f"└─ U isto vreme (±1h): {time_matched}",
+                f"└─ U isto doba (±30d): {seasonal_matched}"
+            ]
+            info_text = "\n".join(info_lines)
+            info_bg_color = "#fff3cd" if danger_level == "UMERENO OPASNO" else "#f8d7da" if danger_level in ["OPASNO",
+                                                                                                             "VEOMA OPASNO"] else "#d4edda"
+            info_text_color = "#856404" if danger_level == "UMERENO OPASNO" else "#721c24" if danger_level in ["OPASNO",
+                                                                                                               "VEOMA OPASNO"] else "#155724"
+        else:
+            info_text = "Nema nesreća u blizini"
+            info_bg_color = "#d4edda"
+            info_text_color = "#155724"
+
+        self.accident_info_text.set_text(info_text)
+        self.accident_info_text.set_color(info_text_color)
+        self.accident_info_text.set_bbox(dict(
+            facecolor=info_bg_color,
+            alpha=0.9,
+            boxstyle="round,pad=0.4",
+            edgecolor='black',
+            linewidth=1
+        ))
+
         plt.pause(plot_pause)
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
 
     def finish_drive(self):
         plt.ioff()
