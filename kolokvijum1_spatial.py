@@ -5,6 +5,8 @@ from h3 import latlng_to_cell
 from h3 import grid_disk
 from geopy.distance import geodesic
 import matplotlib
+import tkinter as tk
+from threading import Thread
 
 from auto_simulator import AutoSimulator
 
@@ -14,7 +16,6 @@ ACCIDENTS_DF = None
 
 # mapiranje (h3 celija -> lista nesreca) za brzu pretragu
 ACCIDENTS_H3_MAP = {}
-
 
 def load_accidents_data():
     global ACCIDENTS_DF, ACCIDENTS_H3_MAP
@@ -40,6 +41,7 @@ def load_accidents_data():
     ).to_dict()
 
     print(f"Završeno učitavanje {len(df)} nesreća u H3 index rezolucije {resolution}.")
+
 
 def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0, print_warning=True):
     if current_time is None:
@@ -128,8 +130,8 @@ if __name__ == "__main__":
         )
         print(f"[DEBUG] Result → Danger: {result['danger_level']}, Total found: {result['total']}\n")
 
-    start_city = "Prijepolje"
-    end_city = "Novi Pazar"
+    start_city = "Beograd"
+    end_city = "Novi Sad"
 
     # 1. Učitaj mrežu puteva Srbije
     G = load_serbian_roads()
@@ -163,8 +165,6 @@ if __name__ == "__main__":
     DEST_LAT, DEST_LON = dest
     FINISH_RADIUS_KM = 1
 
-
-
     try:
         step_count = 0
         while automobil.running:
@@ -177,10 +177,8 @@ if __name__ == "__main__":
             danger_info = check_accident_zone(lat, lon, look_ahead_km=2)
             current_danger = danger_info["danger_level"]
 
-            print(f"[Step {step_count}] Moving...")
-            print(f"Trenutna pozicija: {lat:.6f}, {lon:.6f}")
-            print(f"Nivo opasnosti: {current_danger}")
-            print(f"Preostalo kilometara: {dist_to_dest:.2f} km")
+            print(f"[Korak {step_count}] | Trenutna pozicija: {lat:.6f}, {lon:.6f} | Nivo opasnosti: {current_danger} | Preostalo: {dist_to_dest:.2f} km")
+
 
             progress_info = automobil.get_progress_info()
             marker_label = f"{progress_info} | {current_danger}"
