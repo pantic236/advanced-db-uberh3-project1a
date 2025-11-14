@@ -1,29 +1,80 @@
+import math
 import time
+from collections import defaultdict
+import bisect
 import pandas as pd
-import pyproj
-from h3 import latlng_to_cell
-from h3 import grid_disk
+from h3 import latlng_to_cell, grid_disk
 from geopy.distance import geodesic
-import matplotlib
-import tkinter as tk
-from threading import Thread
 
-from auto_simulator import AutoSimulator
+RESOLUTION = 9
+CELL_KM = 0.35
+SECONDS_IN_DAY = 86400
 
-
-# globalna promenljiva koja cuva podatke o nezgodama
 ACCIDENTS_DF = None
+ACCIDENTS_RECORDS = {}
+ACCIDENTS_H3_MAP = defaultdict(set)
 
-# mapiranje (h3 celija -> lista nesreca) za brzu pretragu
-ACCIDENTS_H3_MAP = {}
+time_of_day_keys = []
+time_of_day_ids = []
 
-def load_accidents_data():
-    global ACCIDENTS_DF, ACCIDENTS_H3_MAP
-    print("Učitavanje i indeksiranje podataka")
+season_keys = []
+season_ids = []
 
-    df = pd.read_excel("data/nez-opendata-2024-20250125.xlsx")
+# pomoćne funkcije
 
-    # preimenovanje kolone za laksi rad
+def _seconds_since_midnight(ts: pd.Timestamp) -> int:
+    return ts.hour * 3600 + ts.minute * 60 + ts.second
+
+def _season_seconds(ts: pd.Timestamp) -> int:
+    day_index = int(ts.dayofyear) - 1
+    seconds = day_index * SECONDS_IN_DAY + _seconds_since_midnight(ts)
+    return seconds
+
+def _cells_for_km(look_ahead_km: float) -> int:
+    return max(1, int(math.ceil(look_ahead_km / CELL_KM)))
+
+def _insert_sorted_pair(keys_list, ids_list, key, rec_id):
+    i = bisect.bisect_right(keys_list, rec_id)
+    keys_list.insert(i, key)
+    ids_list.insert(i, rec_id)
+
+def _build_indexes_from_df(df: pd.DataFrame, resolution: int = RESOLUTION):
+    global ACCIDENTS_RECORDS, ACCIDENTS_H3_MAP, time_of_day_keys, time_of_day_ids, season_keys, season_ids
+
+    ACCIDENTS_RECORDS = {}
+    ACCIDENTS_H3_MAP = defaultdict(set)
+    time_of_day_keys = []
+    time_of_day_ids = []
+    season_keys = []
+    season_ids = []
+
+    for idx, row in df.iterrows():
+        dt = row['datetime']
+        if pd.isna(dt):
+            continue
+        lat = float(row['lat'])
+        lon = float(row['lon'])
+        rec_id = int(idx)
+
+        rec = {'id': rec_id, 'lat': lat, 'lon': lon, 'datetime': dt}
+        ACCIDENTS_RECORDS[rec_id] = rec
+
+        cell = latlng_to_cell(lat, lon, resolution)
+
+        tod = _seconds_since_midnight(dt)
+        _insert_sorted_pair(time_of_day_keys, time_of_day_ids, tod, rec_id)
+
+        skey = _season_seconds(dt)
+        _insert_sorted_pair(season_keys, season_ids, skey, rec_id)
+
+        ACCIDENTS_H3_MAP[cell].add(rec_id)
+
+
+def load_accidents_data(path="data/nez-opendata-2024-20250125.xlsx", resolution: int = RESOLUTION):
+    global ACCIDENTS_DF
+    print("Učitavanje podataka o nesrećama iz", path)
+    df = pd.read_excel(path)
+
     df = df.rename(columns={df.columns[3]: 'datetime_str'})
     df['datetime'] = pd.to_datetime(df['datetime_str'], format='%d.%m.%Y,%H:%M', errors='coerce')
     df = df.dropna(subset=['datetime'])
@@ -31,177 +82,208 @@ def load_accidents_data():
     df['lon'] = df.iloc[:, 4].astype(float) / 1_000_000.0
     df['lat'] = df.iloc[:, 5].astype(float) / 1_000_000.0
 
-    # dodaje h3 index
-    resolution = 9
-    df['h3_cell'] = df.apply(lambda r: latlng_to_cell(r['lat'], r['lon'], resolution), axis=1)
-
     ACCIDENTS_DF = df
-    ACCIDENTS_H3_MAP = df.groupby('h3_cell').apply(
-        lambda g: g[['lat', 'lon', 'datetime']].to_dict('records'),
-    ).to_dict()
 
-    print(f"Završeno učitavanje {len(df)} nesreća u H3 index rezolucije {resolution}.")
+    _build_indexes_from_df(df, resolution=resolution)
+    print(f"Indeksiranje završeno: {len(ACCIDENTS_RECORDS)} zapisa, H3 rez {resolution}")
 
+# vremenske funkcije
 
-def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0, print_warning=True):
+def _query_time_of_day_ids(current_ts: pd.Timestamp, window_seconds=3600):
+    if not time_of_day_keys:
+        return set()
+
+    target = _seconds_since_midnight(current_ts)
+    low = target - window_seconds
+    high = target + window_seconds
+    matched_ids = set()
+
+    if low >= 0 and high < SECONDS_IN_DAY:
+        l = bisect.bisect_left(time_of_day_keys, low)
+        r = bisect.bisect_right(time_of_day_keys, high)
+        matched_ids.update(time_of_day_ids[l:r])
+    else:
+        low_a = max(0, low)
+        high_a = SECONDS_IN_DAY - 1
+        if low_a <= high_a:
+            la = bisect.bisect_left(time_of_day_keys, low_a)
+            ra = bisect.bisect_right(time_of_day_keys, high_a)
+            matched_ids.update(time_of_day_ids[la:ra])
+
+        low_b = 0
+        high_b = min(SECONDS_IN_DAY - 1, high % SECONDS_IN_DAY)
+        if low_b <= high_b:
+            lb = bisect.bisect_left(time_of_day_keys, low_b)
+            rb = bisect.bisect_right(time_of_day_keys, high_b)
+            matched_ids.update(time_of_day_ids[lb:rb])
+
+    return matched_ids
+
+def _query_season_ids(current_ts: pd.Timestamp, window_days=30):
+    if not ACCIDENTS_RECORDS:
+        return set()
+
+    matched_ids = set()
+    current_day = current_ts.dayofyear
+    year_len_days = 366 if current_ts.is_leap_year else 365
+
+    for rid, rec in ACCIDENTS_RECORDS.items():
+        acc_day = rec['datetime'].dayofyear
+
+        diff = abs(current_day - acc_day)
+        day_diff = min(diff, year_len_days - diff)
+        if day_diff <= window_days:
+            matched_ids.add(rid)
+    return matched_ids
+
+# prostorne funkcije
+
+def _collect_spatial_candidate_ids_center(lat, lon, look_ahead_km, resolution=RESOLUTION):
+    if not ACCIDENTS_H3_MAP:
+        return set()
+
+    ring = _cells_for_km(look_ahead_km)
+    center_cell = latlng_to_cell(lat, lon, resolution)
+    cells = grid_disk(center_cell, ring)
+
+    candidate_ids = set()
+    for c in cells:
+        if c in ACCIDENTS_H3_MAP:
+            candidate_ids.update(ACCIDENTS_H3_MAP[c])
+
+    filtered = set()
+    for rid in candidate_ids:
+        rec = ACCIDENTS_RECORDS.get(rid)
+        if rec is None:
+            continue
+        d = geodesic((lat, lon), (rec['lat'], rec['lon'])).kilometers
+        if d <= look_ahead_km:
+            filtered.add(rid)
+    return filtered
+
+def _collect_spatial_candidate_ids_along_route(route_coords, look_ahead_km, resolution=RESOLUTION, buffer_ring=1):
+    if not ACCIDENTS_H3_MAP:
+        return set()
+
+    ring = buffer_ring
+    route_cells = set()
+    for rlat, rlon in route_coords:
+        c = latlng_to_cell(rlat, rlon, resolution)
+        route_cells.update(grid_disk(c, ring))
+
+    candidate_ids = set()
+    for cell in route_cells:
+        if cell in ACCIDENTS_H3_MAP:
+            candidate_ids.update(ACCIDENTS_H3_MAP[cell])
+
+    filtered = set()
+    for rid in candidate_ids:
+        rec = ACCIDENTS_RECORDS.get(rid)
+        if rec is None:
+            continue
+        for rlat, rlon in route_coords:
+            d = geodesic((rec['lat'], rec['lon']), (rlat, rlon)).kilometers
+            if d <= look_ahead_km:
+                filtered.add(rid)
+                break
+    return filtered
+
+# glavna check funkcija
+
+def check_accident_zone(lat, lon, current_time=None, future_route_coords=None, look_ahead_km=5.0, print_warning=True):
     if current_time is None:
         current_time = pd.Timestamp.now()
 
-    current_cell = latlng_to_cell(lat, lon, 9)
-    ring_size = int(look_ahead_km / 0.35) + 1
-    nearby_cells = grid_disk(current_cell, ring_size)
+    if future_route_coords and len(future_route_coords) > 0:
+        spatial_ids = _collect_spatial_candidate_ids_along_route(future_route_coords, look_ahead_km)
+    else:
+        spatial_ids = _collect_spatial_candidate_ids_center(lat, lon, look_ahead_km)
 
-    total_accidents = 0
-    time_matched = 0
-    seasonal_matched = 0
-    accidents_details = []
+    total_accidents = len(spatial_ids)
 
-    for cell in nearby_cells:
-        if cell in ACCIDENTS_H3_MAP:
-            for accident in ACCIDENTS_H3_MAP[cell]:
-                acc_lat = accident['lat']
-                acc_lon = accident['lon']
-                acc_time = accident['datetime']
+    tod_ids = _query_time_of_day_ids(current_time, window_seconds=3600)
+    season_ids_set = _query_season_ids(current_time, window_days=30)
 
-                distance = geodesic((lat, lon), (acc_lat, acc_lon)).kilometers
+    tod_spatial = spatial_ids.intersection(tod_ids)
+    season_spatial = spatial_ids.intersection(season_ids_set)
 
-                if distance <= look_ahead_km:
-                    total_accidents += 1
+    time_matched = len(tod_spatial)
+    season_matched = len(season_spatial)
 
-                time_diff = abs((current_time - acc_time).total_seconds() / 3600)
-                if time_diff <= 1.0:
-                    time_matched += 1
+    accident_details = []
 
-                day_diff = abs((current_time - acc_time).days % 365)
-                if day_diff <= 30 or day_diff >= 335:
-                    seasonal_matched += 1
+    current_day = int(current_time.dayofyear)
+    year_len_days = 366 if current_time.is_leap_year else 365
 
-                accidents_details.append({
-                    'distance': distance,
-                    'time_diff_hours': time_diff,
-                    'day_diff': day_diff
-                })
+    for rid in spatial_ids:
+        rec = ACCIDENTS_RECORDS.get(rid)
+        if rec is None:
+            continue
+        acc_time = rec['datetime']
+        distance = geodesic((lat, lon), (rec['lat'], rec['lon'])).kilometers
+        time_diff_hours = abs((current_time - acc_time).total_seconds()) / 3600.0
+
+        acc_day = int(acc_time.dayofyear)
+        raw_diff = abs(current_day - acc_day)
+        day_diff = min(raw_diff, year_len_days - raw_diff)
+
+        accident_details.append({
+            'id': rid,
+            'distance': distance,
+            'time_diff_hours': time_diff_hours,
+            'day_diff_days': day_diff,
+            'acc_time': acc_time
+        })
 
     danger_level = "BEZBEDNO"
-    if total_accidents > 10 or (time_matched >= 3 and seasonal_matched >= 5):
+    if total_accidents > 10 or (time_matched >= 3 and season_matched >= 5):
         danger_level = "VEOMA OPASNO"
-    elif total_accidents >= 5 or (time_matched >= 2 and seasonal_matched >= 3):
+    elif total_accidents >= 5 or (time_matched >= 2 and season_matched >= 3):
         danger_level = "OPASNO"
     elif total_accidents >= 2:
         danger_level = "UMERENO OPASNO"
 
     if print_warning and total_accidents > 0:
-        print(f"\n{'=' * 60}")
+        print("\n" + "=" * 60)
         print(f"UPOZORENJE - {danger_level}")
-        print(f"{'=' * 60}")
+        print("=" * 60)
         print(f"Pozicija: ({lat:.4f}, {lon:.4f})")
         print(f"Ukupno nesreća u narednih {look_ahead_km} km: {total_accidents}")
         print(f"  • Nesreće u isto vreme dana (±1h): {time_matched}")
-        print(f"  • Nesreće u isto doba godine (±30 dana): {seasonal_matched}")
-        print(f"{'=' * 60}\n")
+        print(f"  • Nesreće u isto doba godine (±30 dana): {season_matched}")
+        print("=" * 60 + "\n")
 
     return {
         'total': total_accidents,
         'time_matched': time_matched,
-        'seasonal_matched': seasonal_matched,
+        'seasonal_matched': season_matched,
         'danger_level': danger_level,
-        'details': accidents_details
+        'details': accident_details
     }
 
+# main
 
 if __name__ == "__main__":
-    from drive_simulator import DriveSimulator, get_route_coordinates, get_route_coords, load_serbian_roads, \
-        show_route_distances
-    load_accidents_data()
-    print("\n[DEBUG] First 3 accidents in dataset:")
-    for i in range(min(3, len(ACCIDENTS_DF))):
-        acc = ACCIDENTS_DF.iloc[i]
-        print(f"  {i+1}. Lat: {acc['lat']:.4f}, Lon: {acc['lon']:.4f}, Time: {acc['datetime']}")
-
-    if len(ACCIDENTS_DF) > 0:
-        first = ACCIDENTS_DF.iloc[0]
-        print(f"\n[DEBUG] Checking danger at accident #1: ({first['lat']:.4f}, {first['lon']:.4f})")
-        result = check_accident_zone(
-            first['lat'],
-            first['lon'],
-            current_time=first['datetime'],
-            look_ahead_km=1.0,
-            print_warning=True
-        )
-        print(f"[DEBUG] Result → Danger: {result['danger_level']}, Total found: {result['total']}\n")
-
-    start_city = "Beograd"
-    end_city = "Novi Sad"
-
-    # 1. Učitaj mrežu puteva Srbije
-    G = load_serbian_roads()
-
-    print(f"Ucitana mreža puteva Srbije! {len(G.nodes)} čvorova, {len(G.edges)} ivica.")
-
-    # 2. Odredjivanje koordinata pocetka i kraja rute
-    orig, dest = get_route_coordinates(start_city, end_city)
-
-    # 3. Odredjivanje rute
-    route_coords, route = get_route_coords(G, orig, dest)
-
-    # show_route_distances(route_coords)
-
-    # 4. Inicijalizacija grafičke mape za voznju rutom
-    drive_simulator = DriveSimulator(G, edge_color='lightgray', edge_linewidth=0.5)
-
-    # 5. Prikaz mape sa rutom
-    drive_simulator.prikazi_mapu(route_coords, route_color='blue', auto_marker_color='ro', auto_marker_size=8)
-
-    # 6. Inicijalizuj simulator kretanja automobila sa brzinom 250 km/h i intervalom od 1 sekunde
-    automobil = AutoSimulator(route_coords, speed_kmh=250, interval=1.0)
-    automobil.running = True
-
-    print("\n=== Simulacija pokrenuta ===")
-    print("Kontrole: Auto se pomera automatski svakih", automobil.interval, "sekundi")
-    print("Za zaustavljanje pritisnite Ctrl+C\n")
-
-    interval_simulacije = 1.0  # sekunde
-    # 7. Glavna petlja simulacije
-    DEST_LAT, DEST_LON = dest
-    FINISH_RADIUS_KM = 1
-
+    import sys
     try:
-        step_count = 0
-        while automobil.running:
-            # Pomeri automobil
-            auto_current_pos = automobil.move()
-            lat, lon = auto_current_pos
+        load_accidents_data()
+    except Exception as e:
+        print("Greška pri učitavanju podataka:", e)
+        sys.exit(1)
 
-            dist_to_dest = geodesic((lat, lon), (DEST_LAT, DEST_LON)).kilometers
+    print("[DEBUG] sample records:")
+    for i, (rid, rec) in enumerate(ACCIDENTS_RECORDS.items()):
+        if i >= 3:
+            break
+        print(f"  {rid}: {rec['lat']:.5f}, {rec['lon']:.5f} at {rec['datetime']}")
 
-            danger_info = check_accident_zone(lat, lon, look_ahead_km=2)
-            current_danger = danger_info["danger_level"]
-
-            print(f"[Korak {step_count}] | Trenutna pozicija: {lat:.6f}, {lon:.6f} | Nivo opasnosti: {current_danger} | Preostalo: {dist_to_dest:.2f} km")
-
-
-            progress_info = automobil.get_progress_info()
-            marker_label = f"{progress_info} | {current_danger}"
-            drive_simulator.move_auto_marker(lat, lon, automobil.get_progress_info(), plot_pause=0.01)
-
-            # Pozovi check_neighbourhood samo na svakih 5 koraka (da ne zatrpava konzolu)
-            step_count += 1
-            if step_count % 5 == 0:
-                check_accident_zone(lat, lon)
-
-            # Proveri da li je stigao na kraj
-            if dist_to_dest <= FINISH_RADIUS_KM:
-                print("\n=== Automobil je stigao na destinaciju! ===")
-                break
-
-            # Čekaj interval pre sledećeg pomeraja
-            time.sleep(interval_simulacije)
-
-    except KeyboardInterrupt:
-        print("\n\n=== Simulacija prekinuta ===")
-
-    drive_simulator.finish_drive()
-
-
+    if ACCIDENTS_RECORDS:
+        first_id = next(iter(ACCIDENTS_RECORDS))
+        rec = ACCIDENTS_RECORDS[first_id]
+        print("\n[DEBUG] running check_accident_zone on first record location/time:")
+        res = check_accident_zone(rec['lat'], rec['lon'], current_time=rec['datetime'], look_ahead_km=5.0)
+        print("[DEBUG] result:", res['danger_level'], "total:", res['total'])
+    else:
+        print("No records loaded.")
 
 
