@@ -43,44 +43,59 @@ def load_accidents_data():
     print(f"Završeno učitavanje {len(df)} nesreća u H3 index rezolucije {resolution}.")
 
 
-def check_accident_zone(lat, lon, current_time=None, look_ahead_km=5.0, print_warning=True):
+def check_accident_zone(lat, lon, current_time=None, future_route_coords=None, look_ahead_km=2.0, print_warning=True):
     if current_time is None:
         current_time = pd.Timestamp.now()
 
-    current_cell = latlng_to_cell(lat, lon, 9)
-    ring_size = int(look_ahead_km / 0.35) + 1
-    nearby_cells = grid_disk(current_cell, ring_size)
+    candidate_accidents = []
+
+    if future_route_coords is None or len(future_route_coords) == 0:
+        current_cell = latlng_to_cell(lat, lon, 9)
+        ring_size = int(look_ahead_km / 0.35) + 1
+        nearby_cells = grid_disk(current_cell, ring_size)
+        for cell in nearby_cells:
+            if cell in ACCIDENTS_H3_MAP:
+                candidate_accidents.extend(ACCIDENTS_H3_MAP[cell])
+    else:
+        route_h3_cells = set()
+        buffer_km = 0.2
+        route_resolution = 9
+        for rlat, rlon in future_route_coords:
+            center_cell = latlng_to_cell(rlat, rlon, route_resolution)
+            ring = int(buffer_km / 0.35) + 1
+            route_h3_cells.update(grid_disk(center_cell, ring))
+
+        for cell in route_h3_cells:
+            if cell in ACCIDENTS_H3_MAP:
+                candidate_accidents.extend(ACCIDENTS_H3_MAP[cell])
 
     total_accidents = 0
     time_matched = 0
     seasonal_matched = 0
     accidents_details = []
 
-    for cell in nearby_cells:
-        if cell in ACCIDENTS_H3_MAP:
-            for accident in ACCIDENTS_H3_MAP[cell]:
-                acc_lat = accident['lat']
-                acc_lon = accident['lon']
-                acc_time = accident['datetime']
+    for accident in candidate_accidents:
+        acc_lat = accident['lat']
+        acc_lon = accident['lon']
+        acc_time = accident['datetime']
 
-                distance = geodesic((lat, lon), (acc_lat, acc_lon)).kilometers
+        time_diff = abs((current_time - acc_time).total_seconds() / 3600)
+        current_day = current_time.dayofyear
+        acc_day = acc_time.dayofyear
+        day_diff = min(abs(current_day - acc_day), 365 - abs(current_day - acc_day))
 
-                if distance <= look_ahead_km:
-                    total_accidents += 1
+        total_accidents += 1
+        if time_diff <= 1.0:
+            time_matched += 1
+        if day_diff <= 30:
+            seasonal_matched += 1
 
-                time_diff = abs((current_time - acc_time).total_seconds() / 3600)
-                if time_diff <= 1.0:
-                    time_matched += 1
-
-                day_diff = abs((current_time - acc_time).days % 365)
-                if day_diff <= 30 or day_diff >= 335:
-                    seasonal_matched += 1
-
-                accidents_details.append({
-                    'distance': distance,
-                    'time_diff_hours': time_diff,
-                    'day_diff': day_diff
-                })
+        accidents_details.append({
+            'acc_lat': acc_lat,
+            'acc_lon': acc_lon,
+            'time_diff_hours': time_diff,
+            'day_diff': day_diff
+        })
 
     danger_level = "BEZBEDNO"
     if total_accidents > 10 or (time_matched >= 3 and seasonal_matched >= 5):
@@ -130,8 +145,8 @@ if __name__ == "__main__":
         )
         print(f"[DEBUG] Result → Danger: {result['danger_level']}, Total found: {result['total']}\n")
 
-    start_city = "Beograd"
-    end_city = "Novi Sad"
+    start_city = "Kruševac"
+    end_city = "Trstenik"
 
     # 1. Učitaj mrežu puteva Srbije
     G = load_serbian_roads()
