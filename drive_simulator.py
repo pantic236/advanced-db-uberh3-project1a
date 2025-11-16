@@ -96,13 +96,14 @@ def get_route_coords(G, orig, dest):
 
 class DriveSimulator:
 
-    def __init__(self, G, edge_color='lightgray', edge_linewidth=0.5):
+    def __init__(self, G, drive_time, edge_color='lightgray', edge_linewidth=0.5):
         self.fig, self.ax = ox.plot_graph(G, node_size=0, edge_color=edge_color, edge_linewidth=edge_linewidth,
                                           show=False, close=False)
         self.fig.set_size_inches(10, 7)
         self.marker = None
         self.danger_text = None
         self.accident_info_text = None
+        self.drive_time = drive_time
 
     def prikazi_mapu(self, route_coords, route_color, auto_marker_color='ro', auto_marker_size=8):
         # 5. Crtanje rute
@@ -160,6 +161,7 @@ class DriveSimulator:
         danger_result = check_accident_zone(
             lat=lat,
             lon=lon,
+            current_time=self.drive_time,
             look_ahead_km=5.0,
             print_warning=False
         )
@@ -174,6 +176,7 @@ class DriveSimulator:
         # Informacije o napretku
         title = (
             f"Pozicija: ({lat:.4f}, {lon:.4f}) | "
+            f"Vreme: {self.drive_time.strftime('%H:%M')} | "
             f"Segment: {auto_progress_info['segment']}/{auto_progress_info['total_segments']} "
             f"({auto_progress_info['segment_progress']:.1f}%) | "
             f"Ukupno: {auto_progress_info['overall_progress']:.1f}% | "
@@ -224,8 +227,9 @@ class DriveSimulator:
                 }
 
                 self.move_auto_marker(lat, lon, auto_progress_info, plot_pause=plot_pause)
+        print("\n=== Automobil je stigao na destinaciju! ===")
         self.finish_drive()
-
+        return
 
 if __name__ == '__main__':
     import sys
@@ -253,7 +257,7 @@ if __name__ == '__main__':
 
     route_coords, route_nodes = get_route_coords(G, orig, dest)
 
-    simulator = DriveSimulator(G)
+    simulator = DriveSimulator(G, drive_time)
     simulator.prikazi_mapu(route_coords, route_color='blue')
     simulator.animate_drive(route_coords, speed_kmh=50, plot_pause=0.05)
 
@@ -276,4 +280,6 @@ if __name__ == '__main__':
             plot_pause=0.05
         )
 
-    simulator.finish_drive()
+        if i == total_segments - 1:
+            simulator.finish_drive()
+            break

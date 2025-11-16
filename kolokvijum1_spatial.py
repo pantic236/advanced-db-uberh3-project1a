@@ -9,6 +9,8 @@ from geopy.distance import geodesic
 RESOLUTION = 9
 CELL_KM = 0.35
 SECONDS_IN_DAY = 86400
+SECONDS_IN_YEAR = 31536000
+SECONDS_IN_LEAP_YEAR = 31622400
 
 ACCIDENTS_DF = None
 ACCIDENTS_RECORDS = {}
@@ -17,8 +19,8 @@ ACCIDENTS_H3_MAP = defaultdict(set)
 time_of_day_keys = []
 time_of_day_ids = []
 
-season_keys = []
-season_ids = []
+day_of_year_keys = []
+day_of_year_ids = []
 
 # pomoćne funkcije
 
@@ -34,19 +36,19 @@ def _cells_for_km(look_ahead_km: float) -> int:
     return max(1, int(math.ceil(look_ahead_km / CELL_KM)))
 
 def _insert_sorted_pair(keys_list, ids_list, key, rec_id):
-    i = bisect.bisect_right(keys_list, rec_id)
+    i = bisect.bisect_right(keys_list, key)
     keys_list.insert(i, key)
     ids_list.insert(i, rec_id)
 
 def _build_indexes_from_df(df: pd.DataFrame, resolution: int = RESOLUTION):
-    global ACCIDENTS_RECORDS, ACCIDENTS_H3_MAP, time_of_day_keys, time_of_day_ids, season_keys, season_ids
+    global ACCIDENTS_RECORDS, ACCIDENTS_H3_MAP, time_of_day_keys, time_of_day_ids, day_of_year_keys, day_of_year_ids
 
     ACCIDENTS_RECORDS = {}
     ACCIDENTS_H3_MAP = defaultdict(set)
     time_of_day_keys = []
     time_of_day_ids = []
-    season_keys = []
-    season_ids = []
+    day_of_year_keys = []
+    day_of_year_ids = []
 
     for idx, row in df.iterrows():
         dt = row['datetime']
@@ -64,8 +66,8 @@ def _build_indexes_from_df(df: pd.DataFrame, resolution: int = RESOLUTION):
         tod = _seconds_since_midnight(dt)
         _insert_sorted_pair(time_of_day_keys, time_of_day_ids, tod, rec_id)
 
-        skey = _season_seconds(dt)
-        _insert_sorted_pair(season_keys, season_ids, skey, rec_id)
+        doy = _season_seconds(dt)
+        _insert_sorted_pair(day_of_year_keys, day_of_year_ids, doy, rec_id)
 
         ACCIDENTS_H3_MAP[cell].add(rec_id)
 
@@ -86,6 +88,9 @@ def load_accidents_data(path="data/nez-opendata-2024-20250125.xlsx", resolution:
 
     _build_indexes_from_df(df, resolution=resolution)
     print(f"Indeksiranje završeno: {len(ACCIDENTS_RECORDS)} zapisa, H3 rez {resolution}")
+    print(f"  - Time-of-day index: {len(time_of_day_keys)} unosa")
+    print(f"  - Day-of-year index: {len(day_of_year_keys)} unosa")
+    print(f"  - H3 spatial cells: {len(ACCIDENTS_H3_MAP)} ćelija")
 
 # vremenske funkcije
 
@@ -120,20 +125,48 @@ def _query_time_of_day_ids(current_ts: pd.Timestamp, window_seconds=3600):
     return matched_ids
 
 def _query_season_ids(current_ts: pd.Timestamp, window_days=30):
-    if not ACCIDENTS_RECORDS:
+    if not day_of_year_keys:
         return set()
 
+    window_seconds = window_days * SECONDS_IN_DAY
+    target = _season_seconds(current_ts)
+
+    year_seconds = SECONDS_IN_LEAP_YEAR if current_ts.is_leap_year else SECONDS_IN_YEAR
+
+    low = target - window_seconds
+    high = target + window_seconds
     matched_ids = set()
-    current_day = current_ts.dayofyear
-    year_len_days = 366 if current_ts.is_leap_year else 365
 
-    for rid, rec in ACCIDENTS_RECORDS.items():
-        acc_day = rec['datetime'].dayofyear
+    if low >= 0 and high < year_seconds:
+        l = bisect.bisect_left(day_of_year_keys, low)
+        r = bisect.bisect_right(day_of_year_keys, high)
+        matched_ids.update(day_of_year_ids[l:r])
+    else:
+        if low < 0:
+            low_a = year_seconds + low
+            high_a = year_seconds - 1
+            la = bisect.bisect_left(day_of_year_keys, low_a)
+            ra = bisect.bisect_right(day_of_year_keys, high_a)
+            matched_ids.update(day_of_year_ids[la:ra])
 
-        diff = abs(current_day - acc_day)
-        day_diff = min(diff, year_len_days - diff)
-        if day_diff <= window_days:
-            matched_ids.add(rid)
+            low_b = 0
+            high_b = high
+            lb = bisect.bisect_left(day_of_year_keys, low_b)
+            rb = bisect.bisect_right(day_of_year_keys, high_b)
+            matched_ids.update(day_of_year_ids[lb:rb])
+        elif high >= year_seconds:
+            low_a = low
+            high_a = year_seconds - 1
+            la = bisect.bisect_left(day_of_year_keys, low_a)
+            ra = bisect.bisect_right(day_of_year_keys, high_a)
+            matched_ids.update(day_of_year_ids[la:ra])
+
+            low_b = 0
+            high_b = high - year_seconds
+            lb = bisect.bisect_left(day_of_year_keys, low_b)
+            rb = bisect.bisect_right(day_of_year_keys, high_b)
+            matched_ids.update(day_of_year_ids[lb:rb])
+
     return matched_ids
 
 # prostorne funkcije
@@ -271,19 +304,5 @@ if __name__ == "__main__":
         print("Greška pri učitavanju podataka:", e)
         sys.exit(1)
 
-    print("[DEBUG] sample records:")
-    for i, (rid, rec) in enumerate(ACCIDENTS_RECORDS.items()):
-        if i >= 3:
-            break
-        print(f"  {rid}: {rec['lat']:.5f}, {rec['lon']:.5f} at {rec['datetime']}")
-
-    if ACCIDENTS_RECORDS:
-        first_id = next(iter(ACCIDENTS_RECORDS))
-        rec = ACCIDENTS_RECORDS[first_id]
-        print("\n[DEBUG] running check_accident_zone on first record location/time:")
-        res = check_accident_zone(rec['lat'], rec['lon'], current_time=rec['datetime'], look_ahead_km=5.0)
-        print("[DEBUG] result:", res['danger_level'], "total:", res['total'])
-    else:
-        print("No records loaded.")
 
 
