@@ -22,6 +22,41 @@ time_of_day_ids = []
 day_of_year_keys = []
 day_of_year_ids = []
 
+# Pavle Pantić, SI94/24
+# VAŽNO -> Pokretati drive_simulator.py da bi se interagovalo sa konzolom i prikazala simulacija.
+# U konzolu treba uneti startni i ciljni grad - putanja se računa za njih dinamički iz graphml fajla. Potom ukucati vreme u YYYY-MM-DD HH:MM formatu (ili enter ukoliko je vreme sada).
+# Pri unosu koristiti dijakritičke znakove. Nekoliko testiranih primera nije bilo case sensitive, ali obratiti pažnju i na to.
+# U slučaju grešaka ili problema sa pokretanjem vezanih za kompatibilnost biblioteka sa drugim OS, demonstriraću svakako na odbrani. Korišćen je MacOS Sonoma 14.0 i Python 3.14.0.
+# LISTA DEPENDENCIJA:
+    # OSMnx, networkx, geopy, h3, contextily - Za geospacijalne funkcije i mapu.
+    # Matplotlib - Za vizualizaciju.
+    # Pandas, bisect, collections.defaultdict  - Za manipulaciju i čitanje podataka.
+    # Math, time, platform - Za dodatne Python funkcije.
+
+# PROSTORNI INDEKSI
+    # Za implementaciju prostornih indeksa korišćen je Uber H3 sistem (po 94mod4).
+    # Rezolucija 9 zbog većeg prostora koji treba pokriti uz adekvatnu granularnost.
+    # Prostorna pretraga je prosečne složenosti O(m), gde je m broj susednih šestougaonih ćelija.
+
+# VREMENSKI INDEKSI
+    # Iako nije među ponuđenim metodama iz specifikacije, smatrao sam da je zanimljiv dalje opisan pristup:
+    # Na osnovu fajla, podaci su sortirani hronološki po timestampu i čuvaju se u array.
+    # Preko bisect modula se radi binarna pretraga na nesrećama u specifičnim vremenskim okvirima, pa se tako nalaze podaci za mesec i sat.
+    # Prosečna složenost je O(log n).
+
+# PODACI O NESREĆAMA
+    # Korišćen MUP fajl iz 2024. sa Drive liste, otvoren preko Pandas biblioteke. Problem nedostatka zaglavlja rešen preimenovanjem kolona.
+    # Posmatra narednih 5.0km - promenljivo u kodu, arbitrarna vrednost.
+    # Klasifikacija opasnosti je takođe arbitrarno izabrana, lako se menja u if-else bloku.
+
+# DODATNI KOMENTARI
+    # Putanje kojima se vozilo u simulaciji kreće često su neizvodljive ili suboptimalne. Na primer, putanja od Beograda ka Novom Sadu ide preko Šapca.
+    # Takođe, zanemaruju se stvarni vozni putevi pa se vozila kreću i preko vode ili neobeleženim putanjama.
+    # Putanje između određenih mesta vraćaju grešku kao nedostupne u graphml fajlu.
+    # Pretpostavljam da ovo nije greška implementacije već ograničenje dostupnih podataka.
+
+    # Podaci u realnom vremenu ispisuju se i u simulaciji i na konzoli.
+
 # pomoćne funkcije
 
 def _seconds_since_midnight(ts: pd.Timestamp) -> int:
